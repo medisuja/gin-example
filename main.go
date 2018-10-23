@@ -7,6 +7,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
+	"fmt"
+	"time"
+	"io/ioutil"
+	"encoding/json"
 )
 
 var db *gorm.DB
@@ -21,10 +25,11 @@ func init() {
 
 	//Migrate the schema
 	db.AutoMigrate(&todoModel{})
+
+	db.AutoMigrate(&logModel{})
 }
 
 func main() {
-
 	router := gin.Default()
 
 	v1 := router.Group("/api/v1/todos")
@@ -36,7 +41,6 @@ func main() {
 		v1.DELETE("/:id", deleteTodo)
 	}
 	router.Run()
-
 }
 
 type (
@@ -53,6 +57,33 @@ type (
 		Title     string `json:"title"`
 		Completed bool   `json:"completed"`
 	}
+
+
+	// logModel describes a logModel type
+	logModel struct {
+		gorm.Model
+		RequestParam   string    `json:"request_param"`
+		RequestURI     string    `json:"request_uri"`
+		RequestMethod  string    `json:"request_method"`
+		RequestTimes   string    `json:"request_time"`
+		Response       string    `json:"response" gorm:"type:text`
+		ResponseStatus string    `json:"response_status"`
+		ResponseTimes  time.Time `json:"response_times" gorm:"column:response_times" sql:"DEFAULT:current_timestamp"`
+		TotalTime      string    `json:"total_time"`
+	}
+
+	// transformedLog represents a formatted log
+	transformedLog struct {
+		ID             uint      `json:"id"`
+		RequestParam   string    `json:"request_param"`
+		RequestURI     string    `json:"request_uri"`
+		RequestMethod  string    `json:"request_method"`
+		RequestTimes   string    `json:"request_time"`
+		Response       string    `json:"response"`
+		ResponseStatus string    `json:"response_status"`
+		ResponseTimes  time.Time `json:"response_times"`
+		TotalTime      string    `json:"total_time"`
+	}
 )
 
 // createTodo add a new todo
@@ -60,7 +91,13 @@ func createTodo(c *gin.Context) {
 	completed, _ := strconv.Atoi(c.PostForm("completed"))
 	todo := todoModel{Title: c.PostForm("title"), Completed: completed}
 	db.Save(&todo)
-	c.JSON(http.StatusCreated, gin.H{"status": http.StatusCreated, "message": "Todo item created successfully!", "resourceId": todo.ID})
+
+	res := gin.H{"status": http.StatusCreated, "message": "Todo item created successfully!", "resourceId": todo.ID}
+
+	response, _ := json.Marshal(res)
+	logAPI(c, string(response))
+
+	c.JSON(http.StatusCreated, res)
 }
 
 // fetchAllTodo fetch all todos
@@ -85,7 +122,14 @@ func fetchAllTodo(c *gin.Context) {
 		}
 		_todos = append(_todos, transformedTodo{ID: item.ID, Title: item.Title, Completed: completed})
 	}
-	c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "data": _todos})
+
+	res := gin.H{"status": http.StatusOK, "data": _todos}
+
+	response, _ := json.Marshal(res)
+
+	logAPI(c, string(response))
+
+	c.JSON(http.StatusOK, res)
 }
 
 // fetchSingleTodo fetch a single todo
@@ -108,7 +152,14 @@ func fetchSingleTodo(c *gin.Context) {
 	}
 
 	_todo := transformedTodo{ID: todo.ID, Title: todo.Title, Completed: completed}
-	c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "data": _todo})
+
+	res := gin.H{"status": http.StatusOK, "data": _todo}
+
+	response, _ := json.Marshal(res)
+
+	logAPI(c, string(response))
+
+	c.JSON(http.StatusOK, res)
 }
 
 // updateTodo update a todo
@@ -119,14 +170,25 @@ func updateTodo(c *gin.Context) {
 	db.First(&todo, todoID)
 
 	if todo.ID == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"status": http.StatusNotFound, "message": "No todo found!"})
+		res := gin.H{"status": http.StatusNotFound, "message": "No todo found!"}
+
+		response, _ := json.Marshal(res)
+		logAPI(c, string(response))
+
+		c.JSON(http.StatusNotFound, res)
 		return
 	}
 
 	db.Model(&todo).Update("title", c.PostForm("title"))
 	completed, _ := strconv.Atoi(c.PostForm("completed"))
 	db.Model(&todo).Update("completed", completed)
-	c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "message": "Todo updated successfully!"})
+
+	res := gin.H{"status": http.StatusOK, "message": "Todo updated successfully!"}
+
+	response, _ := json.Marshal(res)
+	logAPI(c, string(response))
+
+	c.JSON(http.StatusOK, res)
 }
 
 // deleteTodo remove a todo
@@ -142,5 +204,57 @@ func deleteTodo(c *gin.Context) {
 	}
 
 	db.Delete(&todo)
-	c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "message": "Todo deleted successfully!"})
+
+	res := gin.H{"status": http.StatusOK, "message": "Todo deleted successfully!"}
+
+	response, _ := json.Marshal(res)
+	logAPI(c, string(response))
+
+	c.JSON(http.StatusOK, res)
+}
+
+ 
+func logAPI(c *gin.Context, rsp string) {
+	
+	// get request body json
+	getReqBody, _ := ioutil.ReadAll(c.Request.Body)
+	reqBody, _ := json.Marshal(getReqBody)
+	strReqBody := string(reqBody)
+	fmt.Println(reqBody)
+
+	// start := time.Now()
+	path := c.Request.URL.Path
+	raw := c.Request.URL.RawQuery
+
+	// Process request
+	c.Next()
+
+	end := time.Now()
+	endFormat := end.Format("2006-01-02 15:04:05")
+	latency := end.UnixNano() / 1000000
+	strLatency := strconv.FormatInt(latency, 10)
+	// clientIP := c.ClientIP()
+	method := c.Request.Method
+	statusCode := c.Writer.Status()
+	strStatusCode := strconv.Itoa(statusCode)
+
+	if raw != "" {
+		path = path + "?" + raw
+	}
+
+	// insert log
+	insertLogAPI := logModel{
+		RequestParam: strReqBody,
+		RequestURI: path,
+		RequestMethod: method,
+		RequestTimes: endFormat,
+		Response: rsp,
+		ResponseStatus: strStatusCode,
+		ResponseTimes: end,
+		TotalTime: strLatency,
+	}
+
+	db.Save(&insertLogAPI)
+
+	return
 }
